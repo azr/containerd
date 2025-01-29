@@ -24,6 +24,7 @@ import (
 
 	"github.com/containerd/containerd/content"
 	"github.com/containerd/containerd/images"
+	"github.com/containerd/containerd/remotes"
 )
 
 type Transferrer interface {
@@ -37,7 +38,7 @@ type ImageResolver interface {
 type ImageFetcher interface {
 	ImageResolver
 
-	Fetcher(ctx context.Context, ref string) (Fetcher, error)
+	Fetcher(ctx context.Context, ref string, opts ...remotes.FetcherOpt) (Fetcher, error)
 }
 
 type ImagePusher interface {

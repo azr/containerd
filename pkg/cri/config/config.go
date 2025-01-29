@@ -268,7 +268,88 @@ type ImageDecryption struct {
 	KeyModel string `toml:"key_model" json:"keyModel"`
 }
 
-// PluginConfig contains toml config related to CRI plugin,
+// ImagePlatform represents the platform to use for an image including the
+// snapshotter to use. If snapshotter is not provided, the platform default
+// can be assumed. When platform is not provided, the default platform can
+// be assumed
+type ImagePlatform struct {
+	Platform string `toml:"platform" json:"platform"`
+	// Snapshotter setting snapshotter at runtime level instead of making it as a global configuration.
+	// An example use case is to use devmapper or other snapshotters in Kata containers for performance and security
+	// while using default snapshotters for operational simplicity.
+	// See https://github.com/containerd/containerd/issues/6657 for details.
+	Snapshotter string `toml:"snapshotter" json:"snapshotter"`
+}
+
+type ImageConfig struct {
+	// Snapshotter is the snapshotter used by containerd.
+	Snapshotter string `toml:"snapshotter" json:"snapshotter"`
+
+	// DisableSnapshotAnnotations disables to pass additional annotations (image
+	// related information) to snapshotters. These annotations are required by
+	// stargz snapshotter (https://github.com/containerd/stargz-snapshotter).
+	DisableSnapshotAnnotations bool `toml:"disable_snapshot_annotations" json:"disableSnapshotAnnotations"`
+
+	// DiscardUnpackedLayers is a boolean flag to specify whether to allow GC to
+	// remove layers from the content store after successfully unpacking these
+	// layers to the snapshotter.
+	DiscardUnpackedLayers bool `toml:"discard_unpacked_layers" json:"discardUnpackedLayers"`
+
+	// PinnedImages are images which the CRI plugin uses and should not be
+	// removed by the CRI client. The images have a key which can be used
+	// by other plugins to lookup the current image name.
+	// Image names should be full names including domain and tag
+	// Examples:
+	//   "sandbox": "k8s.gcr.io/pause:3.10"
+	//   "base": "docker.io/library/ubuntu:latest"
+	// Migrated from:
+	// (PluginConfig).SandboxImage string `toml:"sandbox_image" json:"sandboxImage"`
+	PinnedImages map[string]string `toml:"pinned_images" json:"pinned_images"`
+
+	// RuntimePlatforms is map between the runtime and the image platform to
+	// use for that runtime. When resolving an image for a runtime, this
+	// mapping will be used to select the image for the platform and the
+	// snapshotter for unpacking.
+	RuntimePlatforms map[string]ImagePlatform `toml:"runtime_platforms" json:"runtimePlatforms"`
+
+	// Registry contains config related to the registry
+	Registry Registry `toml:"registry" json:"registry"`
+
+	// ImageDecryption contains config related to handling decryption of encrypted container images
+	ImageDecryption `toml:"image_decryption" json:"imageDecryption"`
+
+	// MaxConcurrentDownloads restricts the number of concurrent downloads for each image.
+	// TODO: Migrate to transfer service
+	MaxConcurrentDownloads int `toml:"max_concurrent_downloads" json:"maxConcurrentDownloads"`
+
+	// MaxConcurrentDownloadOperations restricts the number of concurrent download operations for each image.
+	MaxConcurrentDownloadOperations int `toml:"max_concurrent_download_operations" json:"maxConcurrentDownloadOperations"`
+
+	// MaxConcurrentDownloadsPerLayer restricts the number of concurrent downloads per layer for each image.
+	MaxConcurrentDownloadsPerLayer int `toml:"max_concurrent_downloads_per_layer" json:"maxConcurrentDownloadsPerLayer"`
+
+	// ConcurrentDownloadChunkSize restricts the maximum concurrent chunks size in for each image during a download.
+	ConcurrentDownloadChunkSize int `toml:"concurrent_download_chunk_size" json:"concurrentDownloadChunkSize"`
+
+	// ImagePullProgressTimeout is the maximum duration that there is no
+	// image data read from image registry in the open connection. It will
+	// be reset whatever a new byte has been read. If timeout, the image
+	// pulling will be cancelled. A zero value means there is no timeout.
+	//
+	// The string is in the golang duration format, see:
+	//   https://golang.org/pkg/time/#ParseDuration
+	ImagePullProgressTimeout string `toml:"image_pull_progress_timeout" json:"imagePullProgressTimeout"`
+
+	// ImagePullWithSyncFs is an experimental setting. It's to force sync
+	// filesystem during unpacking to ensure that data integrity.
+	// TODO: Migrate to transfer service
+	ImagePullWithSyncFs bool `toml:"image_pull_with_sync_fs" json:"imagePullWithSyncFs"`
+
+	// StatsCollectPeriod is the period (in seconds) of snapshots stats collection.
+	StatsCollectPeriod int `toml:"stats_collect_period" json:"statsCollectPeriod"`
+}
+
+// RuntimeConfig contains toml config related to CRI plugin,
 // it is a subset of Config.
 type PluginConfig struct {
 	// ContainerdConfig contains config related to containerd
@@ -323,6 +404,12 @@ type PluginConfig struct {
 	RestrictOOMScoreAdj bool `toml:"restrict_oom_score_adj" json:"restrictOOMScoreAdj"`
 	// MaxConcurrentDownloads restricts the number of concurrent downloads for each image.
 	MaxConcurrentDownloads int `toml:"max_concurrent_downloads" json:"maxConcurrentDownloads"`
+	// MaxConcurrentDownloadOperations restricts the number of concurrent download operations for each image.
+	MaxConcurrentDownloadOperations int `toml:"max_concurrent_download_operations" json:"maxConcurrentDownloadOperations"`
+	// MaxConcurrentDownloadsPerLayer restricts the number of concurrent downloads per layer for each image.
+	MaxConcurrentDownloadsPerLayer int `toml:"max_concurrent_downloads_per_layer" json:"maxConcurrentDownloadsPerLayer"`
+	// ConcurrentDownloadChunkSize restricts the maximum concurrent chunks size in for each image during a download.
+	ConcurrentDownloadChunkSize int `toml:"concurrent_download_chunk_size" json:"concurrentDownloadChunkSize"`
 	// DisableProcMount disables Kubernetes ProcMount support. This MUST be set to `true`
 	// when using containerd with Kubernetes <=1.11.
 	DisableProcMount bool `toml:"disable_proc_mount" json:"disableProcMount"`
