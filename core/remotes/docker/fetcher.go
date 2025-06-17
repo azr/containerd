@@ -478,6 +478,10 @@ func (r dockerFetcher) open(ctx context.Context, req *request, mediatype string,
 	})
 
 	remaining, _ := strconv.ParseInt(resp.Header.Get("Content-Length"), 10, 0)
+	if remaining <= minChunkSize {
+		parallelism = 1
+	}
+
 	if parallelism > 1 && req.body == nil {
 		// If we have a content length, we can use multiple requests to fetch
 		// the content in parallel. This will make download of bigger bodies
