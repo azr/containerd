@@ -34,6 +34,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/assert"
@@ -284,6 +285,144 @@ func TestFetcherOpenParallel(t *testing.T) {
 	assert.NoError(t, err)
 	_, err = io.ReadAll(body)
 	assert.Error(t, err, "this should have failed")
+}
+
+type limitedWriter struct {
+	max       int64
+	bytesRead int64
+}
+
+func (w *limitedWriter) Write(p []byte) (int, error) {
+	n := len(p)
+	w.bytesRead += int64(n)
+	if w.bytesRead >= w.max {
+		return 0, errors.New("simulated write failure after limit")
+	}
+	return n, nil
+}
+
+// TestFetcherOpenParallel_DeadlockOnError reproduces a deadlock where Close()
+// hangs after a write error because goroutines are still blocked on downloads.
+// This test should fail on the buggy code and pass after the fix.
+func TestFetcherOpenParallel_DeadlockOnError(t *testing.T) {
+	size := int64(10 * 1024 * 1024) // 10MB
+	content := make([]byte, size)
+	n, err := rand.New(rand.NewSource(1)).Read(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != int(size) {
+		t.Fatalf("expected to generate %d bytes, got %d", size, n)
+	}
+
+	// Simulate a writer that fails after copying a few chunks
+	// We want to fail after some parallel downloads have started
+	lw := &limitedWriter{max: 2 * 1024 * 1024} // Fail after 2MB (2 chunks)
+
+	// Channel to unblock slow requests (never closed in the buggy version)
+	unblock := make(chan struct{})
+	defer close(unblock)
+
+	// Track if any requests are blocked
+	var blockedRequests atomic.Int64
+
+	s := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		rng, err := parseRange(r.Header.Get("Range"), size)
+		if errors.Is(err, errNoOverlap) {
+			err = nil
+		}
+		if err != nil {
+			t.Logf("parseRange error: %v", err)
+			http.Error(rw, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// If no range, return full content
+		if len(rng) == 0 {
+			rw.Header().Set("content-length", strconv.FormatInt(size, 10))
+			_, _ = rw.Write(content)
+			return
+		}
+
+		// For range requests after the first chunk, block to simulate slow download
+		if rng[0].start > 0 {
+			blockedRequests.Add(1)
+			t.Logf("blocking request for range %s", rng[0].contentRange(size))
+			select {
+			case <-r.Context().Done():
+				t.Logf("request cancelled for range %s", rng[0].contentRange(size))
+				return
+			case <-unblock:
+				t.Logf("unblocking request for range %s", rng[0].contentRange(size))
+			}
+			blockedRequests.Add(-1)
+		}
+
+		b := content[rng[0].start : rng[0].start+rng[0].length]
+		rw.Header().Set("content-range", rng[0].contentRange(size))
+		rw.Header().Set("content-length", strconv.Itoa(len(b)))
+		_, _ = rw.Write(b)
+	}))
+	defer s.Close()
+
+	u, err := url.Parse(s.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f := dockerFetcher{
+		&dockerBase{
+			repository: "test/repo",
+			limiter:    semaphore.NewWeighted(4),
+			performances: transfer.ImageResolverPerformanceSettings{
+				MaxConcurrentDownloads:     4,
+				ConcurrentLayerFetchBuffer: 1 * 1024 * 1024, // 1MB chunks
+			},
+		},
+	}
+
+	host := RegistryHost{
+		Client: s.Client(),
+		Host:   u.Host,
+		Scheme: u.Scheme,
+		Path:   u.Path,
+	}
+
+	req := f.request(host, http.MethodGet)
+	rc, _, err := f.open(context.Background(), req, "", 0, true)
+	if err != nil {
+		t.Fatalf("failed to open reader: %v", err)
+	}
+
+	// Start copying in a goroutine because it will hang on buggy version
+	copyDone := make(chan error, 1)
+	go func() {
+		_, err := io.Copy(lw, rc)
+		copyDone <- err
+	}()
+
+	// On buggy version: Copy hangs because MultiReader is stuck on a slow pipe
+	// On fixed version: Copy completes with an error quickly
+	select {
+	case copyErr := <-copyDone:
+		if copyErr == nil {
+			t.Fatal("expected write error during copy")
+		}
+		t.Logf("got expected copy error: %v", copyErr)
+
+		// Now close should work quickly
+		if err := rc.Close(); err != nil {
+			t.Logf("close error: %v", err)
+		}
+		t.Logf("Test passed - no deadlock (blocked requests: %d)", blockedRequests.Load())
+
+	case <-time.After(5 * time.Second):
+		t.Errorf("DEADLOCK DETECTED: Copy() blocked for >5s (blocked requests: %d)", blockedRequests.Load())
+		t.Log("MultiReader is stuck waiting for a slow pipe while other goroutines are blocked")
+		// Close the rc to clean up
+		rc.Close()
+		t.FailNow()
+	}
 }
 
 func TestContentEncoding(t *testing.T) {
